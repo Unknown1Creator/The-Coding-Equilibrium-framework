@@ -1,0 +1,179 @@
+The Coding Equilibrium framework quantifies software operational pressure through three orthogonal dimensions: **Friction**, **Volatility**, and **Blockage**, each modeled with statistically grounded, context-aware metrics. These are aggregated into a unified diagnostic score, the **Equilibrium Score (EQ)**, and emitted alongside a **Pressure Vector (F, V, B)** for actionable triage.
+
+
+
+---
+
+## I. **Adaptive Baseline Scoring (ABS) — Friction Signature**
+
+Let $ x_t $ denote the resource consumption (time or memory) of execution $ t $ for a given code path, with $ n $ total executions. Define $ \mu_t $ and $ \sigma_t $ as the exponentially smoothed running mean and standard deviation of resource consumption:
+
+$$
+\mu_t = \alpha \cdot x_t + (1 - \alpha) \cdot \mu_{t-1}
+$$
+$$
+\sigma_t = \beta \cdot |x_t - \mu_t| + (1 - \beta) \cdot \sigma_{t-1}
+$$
+
+where $ \alpha, \beta \in (0,1) $ are smoothing constants (typically $ \alpha = 0.1 $, $ \beta = 0.05 $).
+
+The **Z-score** for execution $ t $ is:
+
+$$
+z_t = \frac{|x_t - \mu_t|}{\sigma_t}
+$$
+
+The **Friction Signature** $ F_t $ is a binary indicator:
+
+$$
+F_t = \begin{cases}
+1.0 & \text{if } |z_t| > k \\
+0.0 & \text{otherwise}
+\end{cases}
+$$
+
+where $ k $ is the allowable variance threshold — typically 3 in production, or dynamically set to the 99th percentile of historical $ z $-scores.
+
+To normalize for aggregation:
+
+$$
+F_{\text{norm}} = \frac{F_t}{\max(F_t)} \quad \text{(if } F_t \in \{0,1\} \text{, then } F_{\text{norm}} = F_t \text{)}
+$$
+
+---
+
+## II. **Uncovered Path Entropy (UPE) — Volatility Signature** ? **UPDATED**
+
+Let $ P_{\text{unseen}} $ denote the set of untested logic paths in a module. Each path $ p \in P_{\text{unseen}} $ has a nesting depth $ d_p $. The weight of path $ p $ is:
+
+$$
+W_p = \begin{cases}
+0.1 \cdot 2^{d_p} & \text{if last observed } > 30 \text{ days} \\
+2^{d_p} & \text{otherwise}
+\end{cases}
+$$
+
+The total **Uncovered Path Entropy** is:
+
+$$
+\text{UPE} = \sum_{p \in P_{\text{unseen}}} W_p
+$$
+
+The **Volatility Signature Velocity** $ \nu $ is the rate of change over a sliding window $ \Delta t $ (e.g., 5 minutes):
+
+$$
+\nu = \frac{\Delta \text{UPE}}{\Delta t}
+$$
+
+The **Volatility Signature** $ V $ is computed as:
+
+$$
+V = \min\left(1.0, \nu \cdot \text{scale\_factor}\right)
+$$
+
+where
+
+$$
+\text{scale\_factor} = \begin{cases}
+1.0 & \text{if } \text{UPE} > 100 \\
+0.1 & \text{otherwise}
+\end{cases}
+$$
+
+> ? **Note**: This ensures that **even low UPE systems can detect volatility early** — the scaling factor is applied *before* the min(1.0) normalization.
+
+---
+
+## III. **Stall-to-Work Ratio (SWR) — Blockage Signature**
+
+Let $ \text{work}_t $ denote the time spent in active computation, and $ \text{stall}_t $ denote the time spent in blocked states (I/O, locks, waits). The **Stall-to-Work Ratio** is:
+
+$$
+\text{SWR} = \frac{\text{stall}_t}{\text{work}_t + \text{stall}_t}
+$$
+
+The **Blockage Signature** $ B $ is a binary flag:
+
+$$
+B = \begin{cases}
+1.0 & \text{if } \text{SWR} > 0.8 \\
+0.0 & \text{otherwise}
+\end{cases}
+$$
+
+To normalize for aggregation:
+
+$$
+B_{\text{norm}} = \min(1.0, \text{SWR})
+$$
+
+---
+
+## IV. **Equilibrium Score (EQ) — Composite Pressure Metric**
+
+The **Equilibrium Score** aggregates the normalized pressure signatures using weighted components. Context-aware weights $ w_1 $ and $ w_2 $ are applied based on environment:
+
+$$
+w_1 = \begin{cases}
+0.5 & \text{if environment = CI} \\
+0.3 & \text{if environment = Staging} \\
+0.2 & \text{if environment = Production}
+\end{cases}
+$$
+
+$$
+w_2 = \begin{cases}
+0.2 & \text{if environment = CI} \\
+0.4 & \text{if environment = Staging} \\
+0.6 & \text{if environment = Production}
+\end{cases}
+$$
+
+The final **Equilibrium Score** is:
+
+$$
+\text{EQ} = F_{\text{norm}} + (V \cdot w_1) + (B_{\text{norm}} \cdot w_2)
+$$
+
+> ? **Note**: All components are normalized to [0, 1] or [0, 100], and EQ ? [0, 1 + w_1 + w_2] ? typically [0, 1.5] for full range.
+
+---
+
+## V. **Pressure Vector — Diagnostic Signature**
+
+The **Pressure Vector** $ \mathbf{P} = (F, V, B) $ is emitted alongside EQ for engineering triage:
+
+- $ F \in [0,1] $ — Friction: computational waste relative to baseline
+- $ V \in [0,1] $ — Volatility: latent fragility from untested paths
+- $ B \in [0,1] $ — Blockage: contention or external stalls
+
+The vector is interpreted as follows:
+
+| Signature | Threshold | Engineering Action |
+|-----------|-----------|---------------------|
+| $ F > 0.7 $ | High Friction | Optimize loops, reduce compute waste |
+| $ V > 0.5 $ | High Volatility | Write tests for uncovered paths |
+| $ B > 0.7 $ | High Blockage | Reduce locks, optimize I/O |
+
+---
+
+## VI. **Supporting Enhancements**
+
+### A. Dynamic Variance Threshold (k)
+
+$$
+k = \text{percentile}_{99}(z_t) \quad \text{or} \quad k = \text{median}(z_t) + 3 \cdot \text{IQR}
+$$
+
+### B. Exponential Smoothing Parameters
+
+$$
+\mu_t = \alpha x_t + (1 - \alpha) \mu_{t-1} \\
+\sigma_t = \beta |x_t - \mu_t| + (1 - \beta) \sigma_{t-1}
+$$
+
+with $ \alpha = 0.1 $, $ \beta = 0.05 $.
+
+---
+
+
